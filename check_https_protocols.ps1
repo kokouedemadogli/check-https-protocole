@@ -238,7 +238,9 @@ function Get-HttpStatusCode {
                     -TimeoutSec $script:TimeoutSeconds
                 return [int]$response.StatusCode
             }
-            catch { }
+            catch {
+                # Connection failed on this URL/port — try the next one
+            }
         }
         return ''
     }
