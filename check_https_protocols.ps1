@@ -316,4 +316,4 @@ foreach ($rawUrl in Get-Content -LiteralPath $UrlFile) {
 }
 
 Write-Host ''
-Write-Host "Rapport enregistre dans : $OutputFile"
+Write-Host "Rapport enregistré dans : $OutputFile"
