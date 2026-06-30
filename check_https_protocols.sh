@@ -15,7 +15,6 @@ set -euo pipefail
 # Configuration
 # ──────────────────────────────────────────────
 TIMEOUT=10          # seconds per connection attempt
-PORT=443
 
 # ──────────────────────────────────────────────
 # Helper: usage message
@@ -80,7 +79,7 @@ test_protocol() {
     local result
     result=$(echo "Q" | timeout "$TIMEOUT" openssl s_client \
         "$flag" \
-        -connect "${host}:${PORT}" \
+        -connect "${host}:443" \
         -servername "$host" \
         2>&1 </dev/null) || true
 
@@ -100,32 +99,52 @@ test_protocol() {
 
 # ──────────────────────────────────────────────
 # Helper: get HTTP status code via curl
+# Args: host p443 p8000 p8080 p80
 # ──────────────────────────────────────────────
 get_http_status() {
     local host="$1"
-    local code
-    code=$(curl -s -o /dev/null \
-        -w "%{http_code}" \
-        --max-time "$TIMEOUT" \
-        --connect-timeout "$TIMEOUT" \
-        -L \
-        "https://${host}" 2>/dev/null) || true
-    # curl returns "000" on connection failure
-    if [ "$code" = "000" ] || [ -z "$code" ]; then
-        echo ""
-    else
-        echo "$code"
+    local p443="$2"
+    local p8000="$3"
+    local p8080="$4"
+    local p80="$5"
+    local code=""
+
+    if [ "$p443" = "TRUE" ]; then
+        code=$(curl -s -o /dev/null -w "%{http_code}" \
+            --max-time "$TIMEOUT" --connect-timeout "$TIMEOUT" \
+            -L "https://${host}" 2>/dev/null) || true
+        if [ "$code" != "000" ] && [ -n "$code" ]; then echo "$code"; return; fi
     fi
+    if [ "$p8080" = "TRUE" ]; then
+        code=$(curl -s -o /dev/null -w "%{http_code}" \
+            --max-time "$TIMEOUT" --connect-timeout "$TIMEOUT" \
+            -L "http://${host}:8080" 2>/dev/null) || true
+        if [ "$code" != "000" ] && [ -n "$code" ]; then echo "$code"; return; fi
+    fi
+    if [ "$p8000" = "TRUE" ]; then
+        code=$(curl -s -o /dev/null -w "%{http_code}" \
+            --max-time "$TIMEOUT" --connect-timeout "$TIMEOUT" \
+            -L "http://${host}:8000" 2>/dev/null) || true
+        if [ "$code" != "000" ] && [ -n "$code" ]; then echo "$code"; return; fi
+    fi
+    if [ "$p80" = "TRUE" ]; then
+        code=$(curl -s -o /dev/null -w "%{http_code}" \
+            --max-time "$TIMEOUT" --connect-timeout "$TIMEOUT" \
+            -L "http://${host}" 2>/dev/null) || true
+        if [ "$code" != "000" ] && [ -n "$code" ]; then echo "$code"; return; fi
+    fi
+    echo ""
 }
 
 # ──────────────────────────────────────────────
-# Helper: check if host is reachable on PORT 443
-# Returns 0 on success, 1 on failure
+# Helper: check if a specific port is open
+# Returns 0 if open, 1 if closed/unreachable
 # ──────────────────────────────────────────────
-check_connectivity() {
+test_port() {
     local host="$1"
+    local port="$2"
     if timeout "$TIMEOUT" bash -c \
-        "echo >/dev/tcp/${host}/${PORT}" 2>/dev/null; then
+        "echo >/dev/tcp/${host}/${port}" 2>/dev/null; then
         return 0
     fi
     return 1
@@ -165,8 +184,8 @@ main() {
 
     check_dependencies
 
-    # Write CSV header (tab-separated to match example)
-    printf "URL\tSSL 2.0\tSSL 3.0\tTLS 1.0\tTLS 1.1\tSECURED\tREPONSE HTTP\tERREUR\n" \
+    # Write CSV header (tab-separated)
+    printf "URL\tSSL 2.0\tSSL 3.0\tTLS 1.0\tTLS 1.1\tSECURED\t443\t8000\t8080\t80\tREPONSE HTTP\tERREUR\n" \
         > "$output_file"
 
     local line_number=0
@@ -190,54 +209,62 @@ main() {
 
         echo "  → Testing ${host} ..."
 
-        local ssl2="FALSE" ssl3="FALSE" tls10="FALSE" tls11="FALSE"
-        local secured="TRUE"
+        local ssl2="" ssl3="" tls10="" tls11=""
+        local secured=""
         local http_code=""
         local error=""
+        local p443="" p8000="" p8080="" p80=""
 
         # ── 1. DNS resolution ──────────────────────────────────────────────
         if ! check_dns "$host"; then
             error="Le DNS ne résout pas"
-            printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
-                "$host" "$ssl2" "$ssl3" "$tls10" "$tls11" "$secured" "$http_code" "$error" \
+            printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+                "$host" "$ssl2" "$ssl3" "$tls10" "$tls11" "$secured" \
+                "$p443" "$p8000" "$p8080" "$p80" "$http_code" "$error" \
                 >> "$output_file"
             echo "    [DNS FAIL]"
             continue
         fi
 
-        # ── 2. Port 443 reachability ───────────────────────────────────────
-        if ! check_connectivity "$host"; then
-            error="Port ${PORT} inaccessible ou hôte injoignable"
-            printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
-                "$host" "$ssl2" "$ssl3" "$tls10" "$tls11" "$secured" "$http_code" "$error" \
-                >> "$output_file"
-            echo "    [PORT UNREACHABLE]"
-            continue
-        fi
+        # ── 2. Test all 4 ports ────────────────────────────────────────────
+        test_port "$host" 443  && p443="TRUE"  || p443="FALSE"
+        test_port "$host" 8000 && p8000="TRUE" || p8000="FALSE"
+        test_port "$host" 8080 && p8080="TRUE" || p8080="FALSE"
+        test_port "$host" 80   && p80="TRUE"   || p80="FALSE"
 
-        # ── 3. Protocol tests ──────────────────────────────────────────────
-        ssl2=$(test_protocol  "$host" "-ssl2")
-        ssl3=$(test_protocol  "$host" "-ssl3")
-        tls10=$(test_protocol "$host" "-tls1")
-        tls11=$(test_protocol "$host" "-tls1_1")
+        echo "    Ports: 443=${p443}  8000=${p8000}  8080=${p8080}  80=${p80}"
 
-        # ── 4. SECURED flag ────────────────────────────────────────────────
-        # Treat N/A as not-vulnerable for SECURED calculation.
-        # Any TRUE result means the server supports an obsolete protocol.
-        if [ "$ssl2" = "TRUE" ] || [ "$ssl3" = "TRUE" ] \
-            || [ "$tls10" = "TRUE" ] || [ "$tls11" = "TRUE" ]; then
-            secured="FALSE"
+        # ── 3. Check if all ports closed ───────────────────────────────────
+        if [ "$p443" = "FALSE" ] && [ "$p8000" = "FALSE" ] \
+            && [ "$p8080" = "FALSE" ] && [ "$p80" = "FALSE" ]; then
+            error="Tous les ports testés sont fermés"
         else
-            secured="TRUE"
-        fi
+            # ── 4. HTTP response code ──────────────────────────────────────
+            http_code=$(get_http_status "$host" "$p443" "$p8000" "$p8080" "$p80")
 
-        # ── 5. HTTP response code ──────────────────────────────────────────
-        http_code=$(get_http_status "$host")
+            # ── 5. Protocol tests (only if port 443 is open) ──────────────
+            if [ "$p443" = "TRUE" ]; then
+                ssl2=$(test_protocol  "$host" "-ssl2")
+                ssl3=$(test_protocol  "$host" "-ssl3")
+                tls10=$(test_protocol "$host" "-tls1")
+                tls11=$(test_protocol "$host" "-tls1_1")
+
+                # SECURED = TRUE if no obsolete protocol is confirmed active
+                if [ "$ssl2" = "TRUE" ] || [ "$ssl3" = "TRUE" ] \
+                    || [ "$tls10" = "TRUE" ] || [ "$tls11" = "TRUE" ]; then
+                    secured="FALSE"
+                else
+                    secured="TRUE"
+                fi
+            fi
+            # If port 443 not open: protocols and SECURED remain empty
+        fi
 
         echo "    SSL2=${ssl2}  SSL3=${ssl3}  TLS1.0=${tls10}  TLS1.1=${tls11}  SECURED=${secured}  HTTP=${http_code}"
 
-        printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
-            "$host" "$ssl2" "$ssl3" "$tls10" "$tls11" "$secured" "$http_code" "$error" \
+        printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+            "$host" "$ssl2" "$ssl3" "$tls10" "$tls11" "$secured" \
+            "$p443" "$p8000" "$p8080" "$p80" "$http_code" "$error" \
             >> "$output_file"
 
     done < "$url_file"

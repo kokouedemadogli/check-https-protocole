@@ -12,7 +12,6 @@ $ErrorActionPreference = 'Stop'
 
 $script:TimeoutSeconds = 10
 $script:TimeoutMilliseconds = $script:TimeoutSeconds * 1000
-$script:Port = 443
 
 function Get-HostNameFromInput {
     param(
@@ -69,12 +68,15 @@ function Test-DnsResolution {
 function Test-PortConnectivity {
     param(
         [Parameter(Mandatory = $true)]
-        [string]$HostName
+        [string]$HostName,
+
+        [Parameter(Mandatory = $false)]
+        [int]$Port = 443
     )
 
     $tcpClient = [System.Net.Sockets.TcpClient]::new()
     try {
-        $connectTask = $tcpClient.ConnectAsync($HostName, $script:Port)
+        $connectTask = $tcpClient.ConnectAsync($HostName, $Port)
         if (-not $connectTask.Wait($script:TimeoutMilliseconds)) {
             return $false
         }
@@ -129,7 +131,7 @@ function Test-ProtocolSupport {
     $sslStream = $null
 
     try {
-        $connectTask = $tcpClient.ConnectAsync($HostName, $script:Port)
+        $connectTask = $tcpClient.ConnectAsync($HostName, 443)
         if (-not $connectTask.Wait($script:TimeoutMilliseconds)) {
             return [pscustomobject]@{
                 Result = 'FALSE'
@@ -205,26 +207,39 @@ function Test-ProtocolSupport {
     }
 }
 
-function Get-HttpsStatusCode {
+function Get-HttpStatusCode {
     param(
         [Parameter(Mandatory = $true)]
-        [string]$HostName
+        [string]$HostName,
+
+        [bool]$Port443Open = $false,
+        [bool]$Port8080Open = $false,
+        [bool]$Port8000Open = $false,
+        [bool]$Port80Open = $false
     )
 
     $previousProgressPreference = $global:ProgressPreference
     $global:ProgressPreference = 'SilentlyContinue'
 
     try {
-        $response = Invoke-WebRequest `
-            -Uri "https://$HostName" `
-            -MaximumRedirection 10 `
-            -SkipCertificateCheck `
-            -SkipHttpErrorCheck `
-            -TimeoutSec $script:TimeoutSeconds
+        $trials = [System.Collections.Generic.List[string]]::new()
+        if ($Port443Open)  { $trials.Add("https://$HostName") }
+        if ($Port8080Open) { $trials.Add("http://${HostName}:8080") }
+        if ($Port8000Open) { $trials.Add("http://${HostName}:8000") }
+        if ($Port80Open)   { $trials.Add("http://$HostName") }
 
-        return [int]$response.StatusCode
-    }
-    catch {
+        foreach ($url in $trials) {
+            try {
+                $response = Invoke-WebRequest `
+                    -Uri $url `
+                    -MaximumRedirection 10 `
+                    -SkipCertificateCheck `
+                    -SkipHttpErrorCheck `
+                    -TimeoutSec $script:TimeoutSeconds
+                return [int]$response.StatusCode
+            }
+            catch { }
+        }
         return ''
     }
     finally {
@@ -249,7 +264,7 @@ if (-not (Test-Path -LiteralPath $UrlFile -PathType Leaf)) {
     throw "Le fichier '$UrlFile' est introuvable."
 }
 
-Set-Content -Path $OutputFile -Value "URL`tSSL 2.0`tSSL 3.0`tTLS 1.0`tTLS 1.1`tSECURED`tREPONSE HTTP`tERREUR"
+Set-Content -Path $OutputFile -Value "URL`tSSL 2.0`tSSL 3.0`tTLS 1.0`tTLS 1.1`tSECURED`t443`t8000`t8080`t80`tREPONSE HTTP`tERREUR"
 
 $lineNumber = 0
 foreach ($rawUrl in Get-Content -LiteralPath $UrlFile) {
@@ -267,52 +282,71 @@ foreach ($rawUrl in Get-Content -LiteralPath $UrlFile) {
 
     Write-Host "  -> Test de $hostName ..."
 
-    $ssl2 = 'FALSE'
-    $ssl3 = 'FALSE'
-    $tls10 = 'FALSE'
-    $tls11 = 'FALSE'
-    $secured = 'TRUE'
+    $ssl2 = ''
+    $ssl3 = ''
+    $tls10 = ''
+    $tls11 = ''
+    $secured = ''
     $httpCode = ''
     $errorMessage = ''
+    $p443 = ''
+    $p8000 = ''
+    $p8080 = ''
+    $p80 = ''
 
     if (-not (Test-DnsResolution -HostName $hostName)) {
         $errorMessage = 'Le DNS ne résout pas'
-        Write-ReportRow -Path $OutputFile -Columns @($hostName, $ssl2, $ssl3, $tls10, $tls11, $secured, $httpCode, $errorMessage)
+        Write-ReportRow -Path $OutputFile -Columns @($hostName, $ssl2, $ssl3, $tls10, $tls11, $secured, $p443, $p8000, $p8080, $p80, $httpCode, $errorMessage)
         Write-Host '    [ECHEC DNS]'
         continue
     }
 
-    if (-not (Test-PortConnectivity -HostName $hostName)) {
-        $errorMessage = "Port $script:Port inaccessible ou hôte injoignable"
-        Write-ReportRow -Path $OutputFile -Columns @($hostName, $ssl2, $ssl3, $tls10, $tls11, $secured, $httpCode, $errorMessage)
-        Write-Host '    [PORT INACCESSIBLE]'
-        continue
+    $p443  = if (Test-PortConnectivity -HostName $hostName -Port 443)  { 'TRUE' } else { 'FALSE' }
+    $p8000 = if (Test-PortConnectivity -HostName $hostName -Port 8000) { 'TRUE' } else { 'FALSE' }
+    $p8080 = if (Test-PortConnectivity -HostName $hostName -Port 8080) { 'TRUE' } else { 'FALSE' }
+    $p80   = if (Test-PortConnectivity -HostName $hostName -Port 80)   { 'TRUE' } else { 'FALSE' }
+
+    Write-Host "    Ports: 443=$p443  8000=$p8000  8080=$p8080  80=$p80"
+
+    if ($p443 -eq 'FALSE' -and $p8000 -eq 'FALSE' -and $p8080 -eq 'FALSE' -and $p80 -eq 'FALSE') {
+        $errorMessage = 'Tous les ports testés sont fermés'
     }
+    else {
+        $httpCode = Get-HttpStatusCode -HostName $hostName `
+            -Port443Open ($p443 -eq 'TRUE') `
+            -Port8080Open ($p8080 -eq 'TRUE') `
+            -Port8000Open ($p8000 -eq 'TRUE') `
+            -Port80Open ($p80 -eq 'TRUE')
 
-    $ssl2Result = Test-ProtocolSupport -HostName $hostName -ProtocolName 'Ssl2'
-    $ssl3Result = Test-ProtocolSupport -HostName $hostName -ProtocolName 'Ssl3'
-    $tls10Result = Test-ProtocolSupport -HostName $hostName -ProtocolName 'Tls'
-    $tls11Result = Test-ProtocolSupport -HostName $hostName -ProtocolName 'Tls11'
+        if ($p443 -eq 'TRUE') {
+            $ssl2Result  = Test-ProtocolSupport -HostName $hostName -ProtocolName 'Ssl2'
+            $ssl3Result  = Test-ProtocolSupport -HostName $hostName -ProtocolName 'Ssl3'
+            $tls10Result = Test-ProtocolSupport -HostName $hostName -ProtocolName 'Tls'
+            $tls11Result = Test-ProtocolSupport -HostName $hostName -ProtocolName 'Tls11'
 
-    $ssl2 = $ssl2Result.Result
-    $ssl3 = $ssl3Result.Result
-    $tls10 = $tls10Result.Result
-    $tls11 = $tls11Result.Result
+            $ssl2  = $ssl2Result.Result
+            $ssl3  = $ssl3Result.Result
+            $tls10 = $tls10Result.Result
+            $tls11 = $tls11Result.Result
 
-    foreach ($protocolResult in @($ssl2Result, $ssl3Result, $tls10Result, $tls11Result)) {
-        if ([string]::IsNullOrWhiteSpace($errorMessage) -and -not [string]::IsNullOrWhiteSpace($protocolResult.Error)) {
-            $errorMessage = $protocolResult.Error
+            foreach ($protocolResult in @($ssl2Result, $ssl3Result, $tls10Result, $tls11Result)) {
+                if ([string]::IsNullOrWhiteSpace($errorMessage) -and -not [string]::IsNullOrWhiteSpace($protocolResult.Error)) {
+                    $errorMessage = $protocolResult.Error
+                }
+            }
+
+            if ($ssl2 -eq 'TRUE' -or $ssl3 -eq 'TRUE' -or $tls10 -eq 'TRUE' -or $tls11 -eq 'TRUE') {
+                $secured = 'FALSE'
+            }
+            else {
+                $secured = 'TRUE'
+            }
         }
+        # If port 443 not open: protocols and SECURED remain empty
     }
-
-    if ($ssl2 -eq 'TRUE' -or $ssl3 -eq 'TRUE' -or $tls10 -eq 'TRUE' -or $tls11 -eq 'TRUE') {
-        $secured = 'FALSE'
-    }
-
-    $httpCode = Get-HttpsStatusCode -HostName $hostName
 
     Write-Host "    SSL2=$ssl2  SSL3=$ssl3  TLS1.0=$tls10  TLS1.1=$tls11  SECURED=$secured  HTTP=$httpCode"
-    Write-ReportRow -Path $OutputFile -Columns @($hostName, $ssl2, $ssl3, $tls10, $tls11, $secured, $httpCode, $errorMessage)
+    Write-ReportRow -Path $OutputFile -Columns @($hostName, $ssl2, $ssl3, $tls10, $tls11, $secured, $p443, $p8000, $p8080, $p80, $httpCode, $errorMessage)
 }
 
 Write-Host ''
