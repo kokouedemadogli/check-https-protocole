@@ -1,0 +1,9 @@
+# Sample URLs file for check_https_protocols.sh
+# Lines starting with '#' and empty lines are ignored.
+
+google.com
+github.com
+expired.badssl.com
+tls-v1-0.badssl.com
+tls-v1-1.badssl.com
+nonexistent.thisdoesnotexist.invalid
