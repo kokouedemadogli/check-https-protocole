@@ -99,13 +99,17 @@ The report uses **tab** as the column separator.
 | Column | Description |
 |--------|-------------|
 | `URL` | Hostname extracted from the input |
-| `SSL 2.0` | `TRUE` / `FALSE` / `N/A`* |
-| `SSL 3.0` | `TRUE` / `FALSE` / `N/A`* |
-| `TLS 1.0` | `TRUE` / `FALSE` / `N/A`* |
-| `TLS 1.1` | `TRUE` / `FALSE` / `N/A`* |
-| `SECURED` | `TRUE` if no obsolete protocol is accepted, `FALSE` otherwise |
-| `REPONSE HTTP` | HTTP status code returned over HTTPS (e.g. `200`, `301`) |
-| `ERREUR` | Error message if the host is unreachable or DNS fails |
+| `SSL 2.0` | `TRUE` / `FALSE` / `N/A`* — only tested if port 443 is open |
+| `SSL 3.0` | `TRUE` / `FALSE` / `N/A`* — only tested if port 443 is open |
+| `TLS 1.0` | `TRUE` / `FALSE` / `N/A`* — only tested if port 443 is open |
+| `TLS 1.1` | `TRUE` / `FALSE` / `N/A`* — only tested if port 443 is open |
+| `SECURED` | `TRUE` if all obsolete protocols are `FALSE`/`N/A`; empty if protocols could not be tested |
+| `443` | `TRUE` if port 443 is open, `FALSE` if closed; empty if DNS failed |
+| `8000` | `TRUE` if port 8000 is open, `FALSE` if closed; empty if DNS failed |
+| `8080` | `TRUE` if port 8080 is open, `FALSE` if closed; empty if DNS failed |
+| `80` | `TRUE` if port 80 is open, `FALSE` if closed; empty if DNS failed |
+| `REPONSE HTTP` | HTTP status code returned (e.g. `200`, `301`); empty if unreachable |
+| `ERREUR` | Error message when DNS fails or all ports are closed |
 
 \* `N/A` is reported when the local TLS stack cannot test that protocol
 (common for obsolete protocols on modern systems).
@@ -113,20 +117,25 @@ The report uses **tab** as the column separator.
 ### Example output
 
 ```
-URL             SSL 2.0  SSL 3.0  TLS 1.0  TLS 1.1  SECURED  REPONSE HTTP  ERREUR
-alma.uqtr.ca    TRUE     TRUE     FALSE    TRUE     FALSE    200
-badhost.local   FALSE    FALSE    FALSE    FALSE    TRUE                   Le DNS ne résout pas
+URL                   SSL 2.0  SSL 3.0  TLS 1.0  TLS 1.1  SECURED  443    8000   8080   80     REPONSE HTTP  ERREUR
+alma.uqtr.ca          N/A      FALSE    FALSE    FALSE    TRUE     TRUE   FALSE  FALSE  TRUE   200
+badssl.com            FALSE    FALSE    FALSE    FALSE    TRUE     TRUE   FALSE  FALSE  TRUE   200
+badhost.local                                                      FALSE  FALSE  FALSE  FALSE              Tous les ports testés sont fermés
+nonexistent.invalid                                                                                        Le DNS ne résout pas
 ```
 
 ---
 
 ## Notes
 
-- Only **port 443** is tested.
-- The `SECURED` column is `TRUE` only when **all four** obsolete protocols are
-  rejected by the server.
+- **Ports tested**: 443, 8000, 8080, 80 — each column shows `TRUE` (open) or `FALSE` (closed).
+- SSL/TLS protocol tests run **only when port 443 is open**.
+- The `SECURED` column is `TRUE` only when **all four** obsolete protocols are rejected or
+  untestable (`N/A`) by the server, and port 443 was reachable.
 - Modern TLS stacks may refuse to negotiate obsolete protocols locally; those
   columns will show `N/A` in that case, meaning they cannot be tested from the
   current machine — not that the server supports them.
-- Hosts that fail DNS resolution or TCP connection to port 443 are skipped for
-  protocol tests; an error message is written to the `ERREUR` column.
+- Hosts that fail DNS resolution report empty values for all protocol/port columns
+  and `"Le DNS ne résout pas"` in `ERREUR`.
+- Hosts where DNS resolves but all tested ports are closed report `FALSE` for each
+  port column and `"Tous les ports testés sont fermés"` in `ERREUR`.
